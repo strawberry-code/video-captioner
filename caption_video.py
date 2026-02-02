@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 """
 ╔═══════════════════════════════════════════════════════════════════════════════╗
-║                            VIDEO CAPTIONER                                     ║
+║                          MEDIA CAPTIONER                                       ║
 ║                                                                                ║
-║  Auto-generate subtitles for videos using:                                     ║
+║  Auto-generate subtitles for videos and transcriptions for audio using:        ║
 ║  • Whisper (OpenAI) for speech-to-text transcription                           ║
 ║  • LanguageTool for grammar correction (optional)                              ║
 ║                                                                                ║
 ║  USAGE:                                                                        ║
 ║    python3 caption_video.py video.mp4                                          ║
+║    python3 caption_video.py audio.mp3                                          ║
 ║    python3 caption_video.py video.mp4 --soft                                   ║
 ║    python3 caption_video.py video.mp4 --no-grammar                             ║
 ║    python3 caption_video.py --check                                            ║
+║                                                                                ║
+║  SUPPORTED FORMATS:                                                            ║
+║    Video: mp4, mkv, mov, avi, webm, flv, wmv, m4v                               ║
+║    Audio: mp3, wav, flac, aac, ogg, m4a, wma, opus                              ║
 ║                                                                                ║
 ║  OUTPUT:  Files are saved to the "output/" folder                              ║
 ╚═══════════════════════════════════════════════════════════════════════════════╝
@@ -28,11 +33,25 @@ from pathlib import Path
 
 WHISPER_MODEL = "medium"  # Options: tiny, base, small, medium, large
 
+# Supported file extensions
+VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".wmv", ".m4v"}
+AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a", ".wma", ".opus"}
+
 # Whisper language code → LanguageTool language code
 LANG_MAP = {
     "it": "it", "en": "en-US", "es": "es", "fr": "fr", "de": "de-DE",
     "pt": "pt-PT", "nl": "nl", "pl": "pl-PL", "ru": "ru-RU",
 }
+
+
+def get_media_type(file_path: Path) -> str:
+    """Determine if file is video, audio, or unsupported."""
+    ext = file_path.suffix.lower()
+    if ext in VIDEO_EXTENSIONS:
+        return "video"
+    elif ext in AUDIO_EXTENSIONS:
+        return "audio"
+    return "unknown"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -101,7 +120,7 @@ def check_dependencies():
 
 def extract_audio(video_path: Path, audio_path: Path) -> None:
     """Extract audio from video."""
-    print("📢 Extracting audio...")
+    print("📢 Extracting audio from video...")
     cmd = [
         "ffmpeg", "-y", "-i", str(video_path),
         "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
@@ -109,6 +128,18 @@ def extract_audio(video_path: Path, audio_path: Path) -> None:
     ]
     subprocess.run(cmd, check=True, capture_output=True)
     print(f"   → {audio_path.name}")
+
+
+def convert_audio(input_path: Path, output_path: Path) -> None:
+    """Convert audio file to WAV 16kHz mono for Whisper."""
+    print("📢 Converting audio...")
+    cmd = [
+        "ffmpeg", "-y", "-i", str(input_path),
+        "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+        str(output_path)
+    ]
+    subprocess.run(cmd, check=True, capture_output=True)
+    print(f"   → {output_path.name}")
 
 
 def transcribe_audio(audio_path: Path) -> dict:
@@ -224,12 +255,12 @@ def embed_subtitles(video_path: Path, srt_path: Path, output_path: Path) -> None
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Auto-generate subtitles for videos",
+        description="Auto-generate subtitles for videos and transcriptions for audio",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
-        "video", nargs="?", type=Path,
-        help="Video file to process (e.g., video.mp4)"
+        "media", nargs="?", type=Path,
+        help="Media file to process (video: mp4, mkv, mov, etc. | audio: mp3, wav, flac, etc.)"
     )
     parser.add_argument(
         "--soft", action="store_true",
@@ -255,24 +286,39 @@ def main():
         print("✅ Check complete.\n")
         sys.exit(0)
 
-    # Validate video file
-    if not args.video:
-        print("❌ Error: please specify a video file\n")
-        print("   Usage: python3 caption_video.py video.mp4\n")
+    # Validate media file
+    if not args.media:
+        print("❌ Error: please specify a media file\n")
+        print("   Usage: python3 caption_video.py video.mp4")
+        print("          python3 caption_video.py audio.mp3\n")
         sys.exit(1)
 
-    if not args.video.exists():
-        print(f"❌ Error: file not found: {args.video}\n")
+    if not args.media.exists():
+        print(f"❌ Error: file not found: {args.media}\n")
         sys.exit(1)
 
-    video_path = args.video.resolve()
-    name = video_path.stem
+    media_path = args.media.resolve()
+    media_type = get_media_type(media_path)
+
+    if media_type == "unknown":
+        print(f"❌ Error: unsupported file format: {media_path.suffix}\n")
+        print("   Supported video formats: " + ", ".join(sorted(VIDEO_EXTENSIONS)))
+        print("   Supported audio formats: " + ", ".join(sorted(AUDIO_EXTENSIONS)))
+        print()
+        sys.exit(1)
+
+    name = media_path.stem
+    is_video = media_type == "video"
 
     # Output folder
     output = Path(__file__).parent / "output"
     output.mkdir(exist_ok=True)
 
-    print(f"📁 Video: {video_path.name}\n")
+    print(f"📁 {media_type.capitalize()}: {media_path.name}\n")
+
+    if not is_video and args.soft:
+        print("⚠  Note: --soft option ignored for audio files\n")
+
     print("─" * 70 + "\n")
 
     # Output paths
@@ -283,7 +329,11 @@ def main():
     video_out = output / f"{name}_captioned{suffix}.mp4"
 
     # Pipeline
-    extract_audio(video_path, audio_path)
+    if is_video:
+        extract_audio(media_path, audio_path)
+    else:
+        convert_audio(media_path, audio_path)
+
     result = transcribe_audio(audio_path)
     segments = result["segments"]
     lang = result.get("language", "en")
@@ -294,10 +344,11 @@ def main():
     save_srt(segments, srt_path)
     save_transcript(segments, txt_path)
 
-    if args.soft:
-        embed_subtitles(video_path, srt_path, video_out)
-    else:
-        burn_subtitles(video_path, srt_path, video_out)
+    if is_video:
+        if args.soft:
+            embed_subtitles(media_path, srt_path, video_out)
+        else:
+            burn_subtitles(media_path, srt_path, video_out)
 
     # Cleanup
     audio_path.unlink()
@@ -307,7 +358,8 @@ def main():
     print("✅ DONE!")
     print("═" * 70)
     print(f"\n📂 Output files:\n")
-    print(f"   • {video_out.name:<40} (video)")
+    if is_video:
+        print(f"   • {video_out.name:<40} (video)")
     print(f"   • {srt_path.name:<40} (subtitles)")
     print(f"   • {txt_path.name:<40} (transcript)")
     print()
